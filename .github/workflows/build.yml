@@ -1,0 +1,103 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            artifact_name: uabea-next-windows
+            runtime: win-x64
+          - os: ubuntu-latest
+            artifact_name: uabea-next-linux
+            runtime: linux-x64
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+
+    - name: Restore
+      run: dotnet restore UABEANext4.sln
+
+    - name: Build Solution
+      run: dotnet build UABEANext4.sln -c Release --no-restore
+
+    - name: Publish Desktop and Plugins
+      run: |
+        dotnet publish UABEANext4.Desktop/UABEANext4.Desktop.csproj -c Release -r ${{ matrix.runtime }} --self-contained true -p:PublishSingleFile=false -p:PublishReadyToRun=true -p:SolutionDir=$GITHUB_WORKSPACE/
+        dotnet publish TexturePlugin/TexturePlugin.csproj -c Release -r ${{ matrix.runtime }} --self-contained true -p:SolutionDir=$GITHUB_WORKSPACE/
+        dotnet publish AudioPlugin/AudioPlugin.csproj -c Release -r ${{ matrix.runtime }} --self-contained true -p:SolutionDir=$GITHUB_WORKSPACE/
+        dotnet publish FontPlugin/FontPlugin.csproj -c Release -r ${{ matrix.runtime }} --self-contained true -p:SolutionDir=$GITHUB_WORKSPACE/
+        dotnet publish TextAssetPlugin/TextAssetPlugin.csproj -c Release -r ${{ matrix.runtime }} --self-contained true -p:SolutionDir=$GITHUB_WORKSPACE/
+        dotnet publish MeshPlugin/MeshPlugin.csproj -c Release -r ${{ matrix.runtime }} --self-contained true -p:SolutionDir=$GITHUB_WORKSPACE/
+        mkdir -p publish_output
+        cp -r UABEANext4.Desktop/bin/Release/net8.0/${{ matrix.runtime }}/publish/* publish_output/
+      shell: bash
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact_name }}
+        path: publish_output/
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Get Current Date
+        run: |
+          echo "BUILD_DATE=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
+          echo "TAG_NAME=$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_ENV
+
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: uabea-next-windows
+          path: windows
+
+      - name: Download Linux Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: uabea-next-linux
+          path: linux
+
+      - name: Zip Artifacts
+        run: |
+          cd windows && zip -r ../uabea-next-windows.zip . && cd ..
+          cd linux && zip -r ../uabea-next-linux.zip . && cd ..
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || env.TAG_NAME }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && format('Release {0}', github.ref_name) || format('{0} Build', env.BUILD_DATE) }}
+          body: |
+            Automated build for branch: ${{ github.ref_name }}
+            Build Date: ${{ env.BUILD_DATE }}
+            Commit: ${{ github.sha }}
+          files: |
+            uabea-next-windows.zip
+            uabea-next-linux.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
